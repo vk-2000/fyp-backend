@@ -1,56 +1,70 @@
-from tweet.models import City
+from tweet.models import City, Tweet
 from snscrape.modules.twitter import TwitterSearchScraper
 import pickle
 import re
 import pandas as pd
+from nltk.corpus import stopwords
 import spacy
 nlp = spacy.load('en_core_web_sm')
 
 
-def pre_process(tweet_str):
-    emoji_pattern = re.compile("["
-                               u"\U0001F600-\U0001F64F"  # emoticons
-                               u"\U0001F300-\U0001F5FF"  # symbols & pictographs
-                               u"\U0001F680-\U0001F6FF"  # transport & map symbols
-                               u"\U0001F1E0-\U0001F1FF"  # flags (iOS)
-                               "]+", flags=re.UNICODE)
-    str1 = emoji_pattern.sub(r'', tweet_str)  # no emoji
-    str1 = ' '.join(
-        re.sub("(@[A-Za-z0-9]+)|([^0-9A-Za-z \t])|(\w+:\/\/\S+)", " ", str1).split())
+def is_spam(tweet):
+    
+    with open('ml_model/models_pkl/model_spam.pkl', 'rb') as f:
+        model_spam = pickle.load(f)
 
-    # print(str1)
-    return str1
-
+    with open('ml_model/models_pkl/vectorizer_spam.pkl', 'rb') as f:
+        vectorizer_spam = pickle.load(f)
+    tweet = re.sub('[^a-zA-Z0-9\s]', '', tweet)
+    tweet = tweet.lower()
+    # nltk.download('stopwords')
+    stop_words = set(stopwords.words('english'))
+    tweet = ' '.join([word for word in tweet.split() if word not in stop_words])
+    X = vectorizer_spam.transform([tweet])
+    y = model_spam.predict(X)
+    if y == 1:
+        return True
+    else:
+        return False
 
 def classify_tweet(tweet):
-    loaded_vectorizer = pickle.load(open("ml_model/vector.pickle", "rb"))
-    naive_bayes = pickle.load(open("ml_model/model.pickle", "rb"))
-
-    pre_processed_tweet = pre_process(tweet.content)
-    df = pd.Series([pre_processed_tweet])
-
-    trial1 = loaded_vectorizer.transform(df)
-    predict = naive_bayes.predict(trial1)
-    return predict == '1'
+    with open('ml_model/models_pkl/model.pkl', 'rb') as f:
+        model = pickle.load(f)
+    with open('ml_model/models_pkl/vectorizer.pkl', 'rb') as f:
+        vectorizer = pickle.load(f)
+    tweet = re.sub('[^a-zA-Z0-9\s]', '', tweet)
+    tweet = tweet.lower()
+    # nltk.download('stopwords')
+    stop_words = set(stopwords.words('english'))
+    tweet = ' '.join([word for word in tweet.split() if word not in stop_words])
+    X = vectorizer.transform([tweet])
+    y = model.predict(X)
+    return y[0]
 
 
 def extract_tweets_and_classify(city):
     tweets = []
     for i, tweet in enumerate(TwitterSearchScraper(f'near: {city}').get_items()):
-        if i > 10:
+        if i > 300:
             break
-        tweets.append(tweet)
+        if not is_spam(tweet.content):
+            tweets.append(tweet)
+    
+    for tweet in tweets:
+        tweet.problem_type = classify_tweet(tweet.content)
+    
+    tweets = [tweet for tweet in tweets if tweet.problem_type != 'unproblematic']
 
-    classified_tweets = list(filter(classify_tweet, tweets))
-    # print(classified_tweets)
-    return classified_tweets
+    return tweets
+
+    
 
 
-def extract_locations(tweet):
-    doc = nlp(tweet.content)
-    locations = [e.text
-                 for e in doc.ents if e.label_ in ('FAC', 'LOC', 'EVENT', 'GPE', 'ORG')]
-    return locations
+# def extract_locations(tweet):
+#     doc = nlp(tweet.content)
+#     locations = [e.text
+#                  for e in doc.ents if e.label_ in ('FAC', 'LOC', 'EVENT', 'GPE', 'ORG')]
+#     return locations
 
 
 def update_database():
@@ -60,12 +74,22 @@ def update_database():
 def periodic():
     # extract tweets from every city (city table) and classify the tweets
     print("Periodic process started")
-    cities = City.objects.values_list('name')
+    cities = City.objects.all()
     for city in cities:
-        tweets = extract_tweets_and_classify(city)
+        tweets = extract_tweets_and_classify(city.name)
         for tweet in tweets:
-            # for every tweet
-            locations = extract_locations(tweet)
-            print(tweet.content)
-            print(locations)
-            pass
+
+            if Tweet.objects.filter(id=tweet.id).exists():
+                continue
+            
+            Tweet.objects.create(
+                id=tweet.id,
+                tweet=tweet.content,
+                username=tweet.username,
+                likes=tweet.likeCount,
+                retweets=tweet.retweetCount,
+                quotes=tweet.quoteCount,
+                source=tweet.source,
+                city=city,
+                problem_type=tweet.problem_type
+            )
