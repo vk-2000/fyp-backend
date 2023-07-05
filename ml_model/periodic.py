@@ -1,11 +1,15 @@
 from tweet.models import City, Tweet
 from snscrape.modules.twitter import TwitterSearchScraper
+from snscrape.modules.twitter import Photo, Video, Gif
 import pickle
 import re
 import pandas as pd
 from nltk.corpus import stopwords
+import nltk
 import spacy
 nlp = spacy.load('en_core_web_sm')
+
+# nltk.download('stopwords')
 
 
 def is_spam(tweet):
@@ -45,6 +49,7 @@ def classify_tweet(tweet):
 def extract_tweets_and_classify(city):
     tweets = []
     for i, tweet in enumerate(TwitterSearchScraper(f'near: {city}').get_items()):
+        print(i, city)
         if i > 300:
             break
         if not is_spam(tweet.content):
@@ -59,12 +64,12 @@ def extract_tweets_and_classify(city):
 
     
 
-
-# def extract_locations(tweet):
-#     doc = nlp(tweet.content)
-#     locations = [e.text
-#                  for e in doc.ents if e.label_ in ('FAC', 'LOC', 'EVENT', 'GPE', 'ORG')]
-#     return locations
+# python -m spacy download en_core_web_sm
+def extract_locations(tweet):
+    doc = nlp(tweet)
+    locations = [e.text
+                 for e in doc.ents if e.label_ in ('FAC', 'LOC', 'EVENT', 'GPE', 'ORG')]
+    return locations
 
 
 def update_database():
@@ -77,19 +82,37 @@ def periodic():
     cities = City.objects.all()
     for city in cities:
         tweets = extract_tweets_and_classify(city.name)
+        print(f"Extracted {len(tweets)} tweets from {city.name}")
         for tweet in tweets:
+
+            locations = extract_locations(tweet.content)
 
             if Tweet.objects.filter(id=tweet.id).exists():
                 continue
+
+            media = None
+            if tweet.media and len(tweet.media) > 0:
+                # print(type(tweet.media[0]))
+                # print(isinstance(tweet.media[0], Photo))
+
+                if isinstance(tweet.media[0], Photo):
+                    media = tweet.media[0].fullUrl
+                elif isinstance(tweet.media[0], Video) or isinstance(tweet.media[0], Gif):
+                    media = tweet.media[0].variants[0].url
             
-            Tweet.objects.create(
+            storedTweet = Tweet.objects.create(
                 id=tweet.id,
                 tweet=tweet.content,
                 username=tweet.username,
                 likes=tweet.likeCount,
                 retweets=tweet.retweetCount,
                 quotes=tweet.quoteCount,
-                source=tweet.source,
+                media=media,
+                source=tweet.source or 'Twitter',
                 city=city,
                 problem_type=tweet.problem_type
             )
+
+            for location in locations:
+                storedTweet.location_set.create(location=location)
+            storedTweet.save()
